@@ -1,0 +1,57 @@
+name: Build mod
+on:
+  workflow_dispatch:
+    inputs:
+      zip:
+        description: "Имя zip-файла проекта в корне репозитория"
+        required: true
+        default: "railgrip-forge-1.12.2.zip"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: |
+          mkdir -p proj
+          unzip -oq "${{ github.event.inputs.zip }}" -d proj
+          DIR=$(dirname "$(find proj -name build.gradle | head -1)")
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
+          echo "Проект: $DIR"
+
+      # Готовый образ уже содержит Java 8 и Gradle 4.10.3,
+      # поэтому ничего не нужно скачивать с капризных серверов Java/Gradle.
+      - name: Pull build image (с повторами)
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if docker pull gradle:4.10.3-jdk8; then exit 0; fi
+            echo "Не удалось, пробуем ещё раз ($i)"; sleep 20
+          done
+          exit 1
+
+      - name: Build in Docker (Gradle 4.10.3 + Java 8 + ForgeGradle 2.3)
+        run: |
+          docker run --rm --user root \
+            -v "$GITHUB_WORKSPACE:/work" -w "/work/$PROJECT_DIR" \
+            gradle:4.10.3-jdk8 \
+            sh -c "java -version && gradle --version && gradle setupCIWorkspace build --no-daemon --stacktrace"
+
+      - name: Upload mod jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: mod-jar
+          path: |
+            proj/**/build/libs/*.jar
+            !proj/**/build/libs/*-sources.jar
+
+      - name: Upload build reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports
+          path: |
+            proj/**/build/reports/**
+          if-no-files-found: ignore
